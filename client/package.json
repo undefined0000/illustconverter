@@ -1,0 +1,16 @@
+{
+  "name": "illustconverter-client",
+  "version": "1.0.0",
+  "description": "IllustConverter Frontend",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cropperjs": "^1.6.2"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
