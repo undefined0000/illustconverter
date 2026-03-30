@@ -112,4 +112,118 @@ router.delete('/prompts/:id', authenticateToken, requireAdmin, (req, res) => {
   }
 });
 
+// =========================================
+// Credit Plan Management
+// =========================================
+
+// Get all credit plans (admin)
+router.get('/plans', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const plans = db.prepare('SELECT * FROM credit_plans ORDER BY sort_order ASC').all();
+    res.json({ plans });
+  } catch (err) {
+    console.error('Get plans error:', err);
+    res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
+});
+
+// Create credit plan
+router.post('/plans', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const { name, description, credits, price_yen, sort_order } = req.body;
+    if (!name || !credits || !price_yen) {
+      return res.status(400).json({ error: 'プラン名、クレジット数、価格は必須です' });
+    }
+
+    const result = db.prepare(
+      'INSERT INTO credit_plans (name, description, credits, price_yen, sort_order) VALUES (?, ?, ?, ?, ?)'
+    ).run(name, description || '', credits, price_yen, sort_order ?? 0);
+
+    const plan = db.prepare('SELECT * FROM credit_plans WHERE id = ?').get(result.lastInsertRowid);
+    res.json({ plan });
+  } catch (err) {
+    console.error('Create plan error:', err);
+    res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
+});
+
+// Update credit plan
+router.put('/plans/:id', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, credits, price_yen, is_active, sort_order } = req.body;
+    const existing = db.prepare('SELECT * FROM credit_plans WHERE id = ?').get(id);
+    if (!existing) return res.status(404).json({ error: 'プランが見つかりません' });
+
+    db.prepare(
+      'UPDATE credit_plans SET name=?, description=?, credits=?, price_yen=?, is_active=?, sort_order=? WHERE id=?'
+    ).run(
+      name ?? existing.name, description ?? existing.description,
+      credits ?? existing.credits, price_yen ?? existing.price_yen,
+      is_active ?? existing.is_active, sort_order ?? existing.sort_order, id
+    );
+
+    const updated = db.prepare('SELECT * FROM credit_plans WHERE id = ?').get(id);
+    res.json({ plan: updated });
+  } catch (err) {
+    console.error('Update plan error:', err);
+    res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
+});
+
+// Delete credit plan
+router.delete('/plans/:id', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    db.prepare('DELETE FROM credit_plans WHERE id = ?').run(id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete plan error:', err);
+    res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
+});
+
+// =========================================
+// User Management (admin)
+// =========================================
+
+// Get all users
+router.get('/users', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const users = db.prepare('SELECT id, email, username, is_admin, credits, created_at FROM users ORDER BY created_at DESC').all();
+    res.json({ users });
+  } catch (err) {
+    console.error('Get users error:', err);
+    res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
+});
+
+// Grant credits to user
+router.post('/users/:id/grant', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { credits } = req.body;
+    if (!credits || credits < 1) {
+      return res.status(400).json({ error: '1以上のクレジット数を指定してください' });
+    }
+
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
+
+    db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(credits, id);
+
+    // Record transaction
+    db.prepare(
+      "INSERT INTO transactions (user_id, credits_amount, type, status) VALUES (?, ?, 'admin_grant', 'completed')"
+    ).run(id, credits);
+
+    const updated = db.prepare('SELECT id, email, username, credits FROM users WHERE id = ?').get(id);
+    res.json({ user: updated });
+  } catch (err) {
+    console.error('Grant credits error:', err);
+    res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
+});
+
 module.exports = { router, requireAdmin };
+

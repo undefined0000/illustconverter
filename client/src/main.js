@@ -1,22 +1,25 @@
-import { getUser, clearToken, setToken, setUser, auth } from './api.js';
+import { getUser, clearToken, credit } from './api.js';
 import { renderLogin } from './pages/login.js';
 import { renderDashboard } from './pages/dashboard.js';
 import { renderEditor } from './pages/editor.js';
 import { renderAdmin } from './pages/admin.js';
+import { renderCredits } from './pages/credits.js';
 
 const app = document.getElementById('app');
 
 // Simple hash router
 function getRoute() {
-  return window.location.hash.slice(1) || '/';
+  const hash = window.location.hash.slice(1) || '/';
+  // Remove query params for route matching
+  return hash.split('?')[0];
 }
 
 function navigate(path) {
   window.location.hash = path;
 }
 
-// Navbar
-function renderNavbar(user) {
+// Navbar with credit balance
+function renderNavbar(user, credits) {
   return `
     <nav class="navbar">
       <div class="navbar-brand" id="nav-home">
@@ -24,6 +27,9 @@ function renderNavbar(user) {
         IllustConverter
       </div>
       <div class="navbar-actions">
+        <button class="btn btn-sm btn-secondary" id="nav-credits" style="gap:0.35rem;">
+          💎 <span id="nav-credit-count">${credits ?? '...'}</span>
+        </button>
         <div class="navbar-user">
           <span>${escapeHtml(user.username)}</span>
           ${user.is_admin ? '<span class="badge-admin">ADMIN</span>' : ''}
@@ -40,10 +46,23 @@ function setupNavbar(user) {
   document.getElementById('nav-home')?.addEventListener('click', () => navigate('/dashboard'));
   document.getElementById('nav-dashboard')?.addEventListener('click', () => navigate('/dashboard'));
   document.getElementById('nav-admin')?.addEventListener('click', () => navigate('/admin'));
+  document.getElementById('nav-credits')?.addEventListener('click', () => navigate('/credits'));
   document.getElementById('nav-logout')?.addEventListener('click', () => {
     clearToken();
     navigate('/login');
   });
+}
+
+// Load credit balance for navbar
+async function loadNavCredits() {
+  try {
+    const data = await credit.getBalance();
+    const el = document.getElementById('nav-credit-count');
+    if (el) el.textContent = data.credits;
+    return data.credits;
+  } catch {
+    return 0;
+  }
 }
 
 // Router
@@ -85,10 +104,12 @@ async function router() {
   app.appendChild(content);
   setupNavbar(user);
 
+  // Load credits in background
+  loadNavCredits();
+
   switch (route) {
     case '/dashboard':
       renderDashboard(content, user, (prompt) => {
-        // Store selected prompt and navigate to editor
         if (prompt) {
           sessionStorage.setItem('ic_selected_prompt', JSON.stringify(prompt));
         } else {
@@ -102,6 +123,10 @@ async function router() {
       const storedPrompt = sessionStorage.getItem('ic_selected_prompt');
       const selectedPrompt = storedPrompt ? JSON.parse(storedPrompt) : null;
       renderEditor(content, user, selectedPrompt, () => navigate('/dashboard'));
+      break;
+
+    case '/credits':
+      renderCredits(content);
       break;
 
     case '/admin':

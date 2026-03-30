@@ -44,6 +44,12 @@ router.post('/inpaint', authenticateToken, upload.fields([
       return res.status(400).json({ error: 'プロンプトを選択してください' });
     }
 
+    // Check credit balance
+    const userRecord = db.prepare('SELECT credits FROM users WHERE id = ?').get(req.user.id);
+    if (!userRecord || userRecord.credits < 1) {
+      return res.status(402).json({ error: 'クレジットが不足しています。クレジットを購入してください。', need_credits: true });
+    }
+
     // Validate files
     if (!req.files || !req.files.image || !req.files.mask) {
       return res.status(400).json({ error: '画像とマスクの両方が必要です' });
@@ -85,9 +91,14 @@ router.post('/inpaint', authenticateToken, upload.fields([
       db.prepare('UPDATE jobs SET status = ?, result_image = ? WHERE id = ?')
         .run('completed', resultBase64, job.lastInsertRowid);
 
+      // Deduct 1 credit
+      db.prepare('UPDATE users SET credits = credits - 1 WHERE id = ? AND credits > 0').run(req.user.id);
+      const updatedUser = db.prepare('SELECT credits FROM users WHERE id = ?').get(req.user.id);
+
       res.json({
         success: true,
         job_id: job.lastInsertRowid,
+        remaining_credits: updatedUser.credits,
         image: `data:image/png;base64,${resultBase64}`
       });
     } catch (apiError) {

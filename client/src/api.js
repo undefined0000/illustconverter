@@ -88,6 +88,25 @@ export const admin = {
   deletePrompt: (id) => request(`/admin/prompts/${id}`, {
     method: 'DELETE',
   }),
+  // Credit plan management
+  getPlans: () => request('/admin/plans'),
+  createPlan: (data) => request('/admin/plans', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  updatePlan: (id, data) => request(`/admin/plans/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  }),
+  deletePlan: (id) => request(`/admin/plans/${id}`, {
+    method: 'DELETE',
+  }),
+  // User management
+  getUsers: () => request('/admin/users'),
+  grantCredits: (userId, credits) => request(`/admin/users/${userId}/grant`, {
+    method: 'POST',
+    body: JSON.stringify({ credits }),
+  }),
 };
 
 // Inpaint
@@ -97,4 +116,15 @@ export const images = {
     body: formData,
   }),
   getJobs: () => request('/jobs'),
+};
+
+// Credits
+export const credit = {
+  getBalance: () => request('/credit/balance'),
+  getPlans: () => request('/credit/plans'),
+  checkout: (plan_id) => request('/credit/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ plan_id }),
+  }),
+  getHistory: () => request('/credit/history'),
 };
