@@ -110,20 +110,28 @@ async function router() {
   switch (route) {
     case '/dashboard':
       renderDashboard(content, user, (prompt) => {
-        if (prompt) {
-          sessionStorage.setItem('ic_selected_prompt', JSON.stringify(prompt));
-        } else {
-          sessionStorage.removeItem('ic_selected_prompt');
-        }
+        if (!prompt?.id) return;
+        sessionStorage.setItem('ic_selected_prompt', JSON.stringify(prompt));
         navigate('/editor');
       });
       break;
 
-    case '/editor':
+    case '/editor': {
       const storedPrompt = sessionStorage.getItem('ic_selected_prompt');
-      const selectedPrompt = storedPrompt ? JSON.parse(storedPrompt) : null;
+      let selectedPrompt = null;
+      try {
+        selectedPrompt = storedPrompt ? JSON.parse(storedPrompt) : null;
+      } catch {
+        selectedPrompt = null;
+      }
+      if (!selectedPrompt?.id) {
+        sessionStorage.removeItem('ic_selected_prompt');
+        navigate('/dashboard');
+        return;
+      }
       renderEditor(content, user, selectedPrompt, () => navigate('/dashboard'));
       break;
+    }
 
     case '/credits':
       renderCredits(content);

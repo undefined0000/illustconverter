@@ -13,7 +13,14 @@ try {
   console.warn('⚠️ Stripe not configured');
 }
 
-const APP_URL = process.env.APP_URL || 'http://localhost:5173';
+function getAppUrl(req) {
+  const configuredUrl = process.env.APP_URL?.trim();
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, '');
+  }
+
+  return `${req.protocol}://${req.get('host')}`;
+}
 
 // Get credit balance
 router.get('/balance', authenticateToken, (req, res) => {
@@ -56,6 +63,8 @@ router.post('/checkout', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'プランが見つかりません' });
     }
 
+    const appUrl = getAppUrl(req);
+
     // Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -71,8 +80,8 @@ router.post('/checkout', authenticateToken, async (req, res) => {
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `${APP_URL}/#/credits?status=success`,
-      cancel_url: `${APP_URL}/#/credits?status=cancel`,
+      success_url: `${appUrl}/#/credits?status=success`,
+      cancel_url: `${appUrl}/#/credits?status=cancel`,
       metadata: {
         user_id: req.user.id.toString(),
         plan_id: plan.id.toString(),

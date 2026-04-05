@@ -2,9 +2,10 @@ services:
   - type: web
     name: illustconverter
     runtime: node
-    plan: free
+    plan: starter
     buildCommand: npm run install:all && npm run build
     startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
       - key: NOVELAI_TOKEN
         sync: false
@@ -14,6 +15,14 @@ services:
         value: admin@illustconverter.com
       - key: ADMIN_PASSWORD
         sync: false
+      - key: DEMO_EMAIL
+        value: demo.user@illustconverter.com
+      - key: DEMO_PASSWORD
+        value: user123456
+      - key: DEMO_USERNAME
+        value: Demo User
+      - key: DEMO_CREDITS
+        value: 20
       - key: NODE_ENV
         value: production
     disk:

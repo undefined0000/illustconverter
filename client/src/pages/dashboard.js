@@ -4,32 +4,21 @@ export function renderDashboard(app, user, onSelectPrompt) {
   app.innerHTML = `
     <div class="dashboard">
       <div class="dashboard-hero">
-        <h2>✦ イラスト変換を始めよう</h2>
-        <p>画像をアップロードして、変換したい部分をマスクで塗り、AIが自動で美しいイラストに変換します。</p>
+        <h2>✦ 変換設定を選択</h2>
       </div>
       
-      <div class="editor-title">変換スタイルを選択</div>
-      <div class="editor-subtitle">管理者が用意した変換プロンプトから選んでください</div>
+      <div class="editor-title">プリセット一覧</div>
+      <div class="editor-subtitle">利用する設定を選んで開始してください</div>
       
       <div class="prompt-grid" id="prompt-grid">
         <div class="loading-screen" style="min-height:200px">
           <div class="loading-spinner"></div>
         </div>
       </div>
-      
-      <div class="start-section">
-        <button class="btn btn-primary btn-lg" id="start-without-prompt">
-          スタイル未選択で開始 →
-        </button>
-      </div>
     </div>
   `;
 
   loadPrompts(onSelectPrompt);
-  
-  document.getElementById('start-without-prompt').addEventListener('click', () => {
-    onSelectPrompt(null);
-  });
 }
 
 async function loadPrompts(onSelectPrompt) {
@@ -48,7 +37,7 @@ async function loadPrompts(onSelectPrompt) {
     grid.innerHTML = data.prompts.map(p => `
       <div class="card prompt-card" data-prompt-id="${p.id}">
         <div class="card-title">${escapeHtml(p.name)}</div>
-        <div class="card-description">${escapeHtml(p.description || '説明なし')}</div>
+        ${p.description ? `<div class="card-description">${escapeHtml(p.description)}</div>` : ''}
       </div>
     `).join('');
 
@@ -62,7 +51,7 @@ async function loadPrompts(onSelectPrompt) {
   } catch (err) {
     grid.innerHTML = `
       <div class="card" style="grid-column: 1/-1; text-align:center;">
-        <p style="color: var(--danger)">プロンプトの読み込みに失敗しました: ${escapeHtml(err.message)}</p>
+        <p style="color: var(--danger)">設定の読み込みに失敗しました: ${escapeHtml(err.message)}</p>
       </div>
     `;
   }

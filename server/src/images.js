@@ -4,6 +4,7 @@ const sharp = require('sharp');
 const db = require('./db');
 const { authenticateToken } = require('./auth');
 const { callInpaint } = require('./novelai');
+const { FIXED_IMAGE_WIDTH, FIXED_IMAGE_HEIGHT } = require('./novelai-config');
 
 const router = express.Router();
 
@@ -38,16 +39,13 @@ router.post('/inpaint', authenticateToken, upload.fields([
   { name: 'image', maxCount: 1 },
   { name: 'mask', maxCount: 1 }
 ]), async (req, res) => {
+  let creditReserved = false;
+  let jobId = null;
+
   try {
     const { prompt_id } = req.body;
     if (!prompt_id) {
-      return res.status(400).json({ error: 'プロンプトを選択してください' });
-    }
-
-    // Check credit balance
-    const userRecord = db.prepare('SELECT credits FROM users WHERE id = ?').get(req.user.id);
-    if (!userRecord || userRecord.credits < 1) {
-      return res.status(402).json({ error: 'クレジットが不足しています。クレジットを購入してください。', need_credits: true });
+      return res.status(400).json({ error: '設定を選択してください' });
     }
 
     // Validate files
@@ -58,18 +56,18 @@ router.post('/inpaint', authenticateToken, upload.fields([
     // Get prompt config
     const promptConfig = db.prepare('SELECT * FROM prompts WHERE id = ? AND is_active = 1').get(prompt_id);
     if (!promptConfig) {
-      return res.status(404).json({ error: 'プロンプトが見つかりません' });
+      return res.status(404).json({ error: '選択した設定が見つかりません' });
     }
 
-    // Process image - ensure it's 832x1216 PNG
+    // Process image - ensure it's the fixed Opus-free portrait size
     const imageBuffer = await sharp(req.files.image[0].buffer)
-      .resize(832, 1216, { fit: 'fill' })
+      .resize(FIXED_IMAGE_WIDTH, FIXED_IMAGE_HEIGHT, { fit: 'fill' })
       .png()
       .toBuffer();
 
-    // Process mask - ensure it's 832x1216 PNG
+    // Process mask - ensure it's the fixed Opus-free portrait size
     const maskBuffer = await sharp(req.files.mask[0].buffer)
-      .resize(832, 1216, { fit: 'fill' })
+      .resize(FIXED_IMAGE_WIDTH, FIXED_IMAGE_HEIGHT, { fit: 'fill' })
       .png()
       .toBuffer();
 
@@ -77,10 +75,21 @@ router.post('/inpaint', authenticateToken, upload.fields([
     const imageBase64 = imageBuffer.toString('base64');
     const maskBase64 = maskBuffer.toString('base64');
 
+    const reserved = db.prepare(
+      'UPDATE users SET credits = credits - 1 WHERE id = ? AND credits > 0'
+    ).run(req.user.id);
+
+    if (reserved.changes === 0) {
+      return res.status(402).json({ error: 'クレジットが不足しています。クレジットを購入してください。', need_credits: true });
+    }
+
+    creditReserved = true;
+
     // Create job record
     const job = db.prepare(
       'INSERT INTO jobs (user_id, prompt_id, status) VALUES (?, ?, ?)'
     ).run(req.user.id, prompt_id, 'processing');
+    jobId = job.lastInsertRowid;
 
     try {
       // Call NovelAI API
@@ -89,25 +98,36 @@ router.post('/inpaint', authenticateToken, upload.fields([
       // Update job with result
       const resultBase64 = resultBuffer.toString('base64');
       db.prepare('UPDATE jobs SET status = ?, result_image = ? WHERE id = ?')
-        .run('completed', resultBase64, job.lastInsertRowid);
+        .run('completed', resultBase64, jobId);
 
-      // Deduct 1 credit
-      db.prepare('UPDATE users SET credits = credits - 1 WHERE id = ? AND credits > 0').run(req.user.id);
       const updatedUser = db.prepare('SELECT credits FROM users WHERE id = ?').get(req.user.id);
+      creditReserved = false;
 
       res.json({
         success: true,
-        job_id: job.lastInsertRowid,
+        job_id: jobId,
         remaining_credits: updatedUser.credits,
         image: `data:image/png;base64,${resultBase64}`
       });
     } catch (apiError) {
-      db.prepare('UPDATE jobs SET status = ? WHERE id = ?')
-        .run('failed', job.lastInsertRowid);
-      console.error('NovelAI API error:', apiError);
-      res.status(502).json({ error: `NovelAI APIエラー: ${apiError.message}` });
+      if (jobId) {
+        db.prepare('UPDATE jobs SET status = ? WHERE id = ?')
+          .run('failed', jobId);
+      }
+      if (creditReserved) {
+        db.prepare('UPDATE users SET credits = credits + 1 WHERE id = ?').run(req.user.id);
+        creditReserved = false;
+      }
+      console.error('Upstream image processing error:', apiError);
+      res.status(502).json({ error: '処理に失敗しました。時間をおいて再度お試しください。' });
     }
   } catch (err) {
+    if (creditReserved) {
+      db.prepare('UPDATE users SET credits = credits + 1 WHERE id = ?').run(req.user.id);
+    }
+    if (jobId) {
+      db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run('failed', jobId);
+    }
     console.error('Inpaint error:', err);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }

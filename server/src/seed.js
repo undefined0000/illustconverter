@@ -1,6 +1,9 @@
 require('dotenv').config();
 const bcrypt = require('bcryptjs');
 const db = require('./db');
+const {
+  getDefaultPromptSeed,
+} = require('./novelai-config');
 
 const email = process.env.ADMIN_EMAIL || 'admin@illustconverter.com';
 const password = process.env.ADMIN_PASSWORD || 'admin123456';
@@ -23,17 +26,27 @@ if (existing) {
 // Create a sample prompt if none exist
 const promptCount = db.prepare('SELECT COUNT(*) as count FROM prompts').get();
 if (promptCount.count === 0) {
+  const defaultPrompt = getDefaultPromptSeed();
   db.prepare(`
-    INSERT INTO prompts (name, description, prompt, negative_prompt, strength, steps, scale)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO prompts (
+      name, description, prompt, negative_prompt, strength, noise, sampler, steps, scale, model,
+      quality_tags_enabled, uc_preset, character_prompts_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    'デフォルト変換',
-    '基本的なイラスト変換プロンプト',
-    'masterpiece, best quality, highly detailed illustration',
-    'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark',
-    0.7,
-    28,
-    5.0
+    defaultPrompt.name,
+    defaultPrompt.description,
+    defaultPrompt.prompt,
+    defaultPrompt.negative_prompt,
+    defaultPrompt.strength,
+    defaultPrompt.noise,
+    defaultPrompt.sampler,
+    defaultPrompt.steps,
+    defaultPrompt.scale,
+    defaultPrompt.model,
+    defaultPrompt.quality_tags_enabled,
+    defaultPrompt.uc_preset,
+    defaultPrompt.character_prompts_json
   );
   console.log('✅ Sample prompt created');
 }

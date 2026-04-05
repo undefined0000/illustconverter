@@ -6,7 +6,7 @@ export function renderLogin(app, onLoginSuccess) {
       <div class="auth-card card">
         <div class="auth-header">
           <h1>IllustConverter</h1>
-          <p>AI イラスト変換サービス</p>
+          <p>画像変換サービス</p>
         </div>
         
         <div class="auth-tabs">
@@ -20,11 +20,11 @@ export function renderLogin(app, onLoginSuccess) {
         <form id="login-form">
           <div class="form-group">
             <label class="form-label" for="login-email">メールアドレス</label>
-            <input class="form-input" type="email" id="login-email" placeholder="your@email.com" required />
+            <input class="form-input" type="email" id="login-email" placeholder="your@email.com" autocomplete="email" required />
           </div>
           <div class="form-group">
             <label class="form-label" for="login-password">パスワード</label>
-            <input class="form-input" type="password" id="login-password" placeholder="••••••••" required />
+            <input class="form-input" type="password" id="login-password" placeholder="••••••••" autocomplete="current-password" required />
           </div>
           <button type="submit" class="btn btn-primary btn-lg" style="width:100%" id="login-btn">
             ログイン
@@ -35,15 +35,15 @@ export function renderLogin(app, onLoginSuccess) {
         <form id="register-form" class="hidden">
           <div class="form-group">
             <label class="form-label" for="reg-username">ユーザー名</label>
-            <input class="form-input" type="text" id="reg-username" placeholder="表示名" required />
+            <input class="form-input" type="text" id="reg-username" placeholder="表示名" autocomplete="username" required />
           </div>
           <div class="form-group">
             <label class="form-label" for="reg-email">メールアドレス</label>
-            <input class="form-input" type="email" id="reg-email" placeholder="your@email.com" required />
+            <input class="form-input" type="email" id="reg-email" placeholder="your@email.com" autocomplete="email" required />
           </div>
           <div class="form-group">
             <label class="form-label" for="reg-password">パスワード</label>
-            <input class="form-input" type="password" id="reg-password" placeholder="6文字以上" required minlength="6" />
+            <input class="form-input" type="password" id="reg-password" placeholder="6文字以上" autocomplete="new-password" required minlength="6" />
           </div>
           <button type="submit" class="btn btn-primary btn-lg" style="width:100%" id="register-btn">
             アカウント作成

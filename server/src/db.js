@@ -1,5 +1,12 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const {
+  FIXED_NOVELAI_MODEL,
+  DEFAULT_SAMPLER,
+  DEFAULT_STEPS,
+  DEFAULT_SCALE,
+  DEFAULT_UC_PRESET,
+} = require('./novelai-config');
 
 const dbPath = path.join(__dirname, '..', 'illustconverter.db');
 const db = new Database(dbPath);
@@ -27,10 +34,13 @@ db.exec(`
     negative_prompt TEXT DEFAULT '',
     strength REAL DEFAULT 0.7,
     noise REAL DEFAULT 0.0,
-    sampler TEXT DEFAULT 'k_euler',
-    steps INTEGER DEFAULT 28,
-    scale REAL DEFAULT 5.0,
-    model TEXT DEFAULT 'nai-diffusion-3',
+    sampler TEXT DEFAULT '${DEFAULT_SAMPLER}',
+    steps INTEGER DEFAULT ${DEFAULT_STEPS},
+    scale REAL DEFAULT ${DEFAULT_SCALE},
+    model TEXT DEFAULT '${FIXED_NOVELAI_MODEL}',
+    quality_tags_enabled INTEGER DEFAULT 1,
+    uc_preset TEXT DEFAULT '${DEFAULT_UC_PRESET}',
+    character_prompts_json TEXT DEFAULT '[]',
     is_active INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
@@ -71,6 +81,10 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (plan_id) REFERENCES credit_plans(id)
   );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_stripe_session_id
+  ON transactions(stripe_session_id)
+  WHERE stripe_session_id IS NOT NULL AND stripe_session_id != '';
 `);
 
 // Migration: add credits column if missing (for existing DBs)
@@ -80,5 +94,32 @@ try {
   db.exec("ALTER TABLE users ADD COLUMN credits INTEGER DEFAULT 0");
   console.log('✅ Migration: added credits column to users');
 }
+
+function columnExists(tableName, columnName) {
+  return db.prepare(`PRAGMA table_info(${tableName})`).all().some((column) => column.name === columnName);
+}
+
+function addColumnIfMissing(tableName, columnDefinition) {
+  const [columnName] = columnDefinition.split(' ');
+  if (columnExists(tableName, columnName)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnDefinition}`);
+  console.log(`✅ Migration: added ${columnName} column to ${tableName}`);
+}
+
+addColumnIfMissing('prompts', "quality_tags_enabled INTEGER DEFAULT 1");
+addColumnIfMissing('prompts', `uc_preset TEXT DEFAULT '${DEFAULT_UC_PRESET}'`);
+addColumnIfMissing('prompts', "character_prompts_json TEXT DEFAULT '[]'");
+
+db.prepare('UPDATE prompts SET model = ? WHERE model IS NULL OR model != ?')
+  .run(FIXED_NOVELAI_MODEL, FIXED_NOVELAI_MODEL);
+
+db.prepare('UPDATE prompts SET quality_tags_enabled = 1 WHERE quality_tags_enabled IS NULL').run();
+db.prepare('UPDATE prompts SET uc_preset = ? WHERE uc_preset IS NULL OR uc_preset = ?')
+  .run(DEFAULT_UC_PRESET, '');
+db.prepare('UPDATE prompts SET character_prompts_json = ? WHERE character_prompts_json IS NULL OR trim(character_prompts_json) = ?')
+  .run('[]', '');
 
 module.exports = db;

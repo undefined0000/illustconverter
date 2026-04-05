@@ -14,7 +14,7 @@ export function renderCredits(app) {
     <div class="dashboard">
       <div class="dashboard-hero" style="padding-bottom: 1rem;">
         <h2>💎 クレジット</h2>
-        <p>クレジットを購入して、イラスト変換をお楽しみください。1回の変換に1クレジット消費します。</p>
+        <p>1回の変換に1クレジット消費します。</p>
       </div>
 
       ${statusMessage}

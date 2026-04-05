@@ -6,18 +6,29 @@ const { router: authRouter } = require('./auth');
 const { router: adminRouter } = require('./admin');
 const imagesRouter = require('./images');
 const { router: paymentRouter } = require('./payment');
+const { getDefaultPromptSeed } = require('./novelai-config');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.set('trust proxy', true);
+
+function parsePositiveInt(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 // Stripe webhook needs raw body - must be before express.json()
 app.post('/api/credit/webhook', express.raw({ type: 'application/json' }), (req, res) => {
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  let stripe;
-  try {
-    stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-  } catch (e) {
-    return res.status(503).json({ error: 'Stripe not configured' });
+  let stripe = null;
+
+  if (webhookSecret) {
+    try {
+      stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    } catch (e) {
+      return res.status(503).json({ error: 'Stripe not configured' });
+    }
   }
 
   let event;
@@ -35,21 +46,54 @@ app.post('/api/credit/webhook', express.raw({ type: 'application/json' }), (req,
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    const userId = parseInt(session.metadata.user_id);
-    const planId = parseInt(session.metadata.plan_id);
-    const credits = parseInt(session.metadata.credits);
+    const db = require('./db');
 
-    if (userId && credits) {
-      const db = require('./db');
-      try {
-        // Grant credits
+    try {
+      const applyCompletedCheckout = db.transaction((checkoutSession) => {
+        const existingTransaction = db.prepare(
+          'SELECT id, user_id, plan_id, credits_amount, status FROM transactions WHERE stripe_session_id = ?'
+        ).get(checkoutSession.id);
+
+        const userId = parsePositiveInt(checkoutSession.metadata?.user_id) ?? existingTransaction?.user_id ?? null;
+        const planId = parsePositiveInt(checkoutSession.metadata?.plan_id) ?? existingTransaction?.plan_id ?? null;
+        const credits = parsePositiveInt(checkoutSession.metadata?.credits) ?? existingTransaction?.credits_amount ?? null;
+
+        if (!userId || !credits) {
+          return { applied: false, reason: 'missing_metadata' };
+        }
+
+        if (!existingTransaction) {
+          db.prepare(
+            "INSERT INTO transactions (user_id, plan_id, credits_amount, type, stripe_session_id, status) VALUES (?, ?, ?, 'purchase', ?, 'completed')"
+          ).run(userId, planId, credits, checkoutSession.id);
+          db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(credits, userId);
+          return { applied: true, userId, credits };
+        }
+
+        if (existingTransaction.status === 'completed') {
+          return { applied: false, reason: 'already_completed', userId, credits };
+        }
+
+        const updated = db.prepare(
+          "UPDATE transactions SET status = 'completed' WHERE id = ? AND status != 'completed'"
+        ).run(existingTransaction.id);
+
+        if (updated.changes === 0) {
+          return { applied: false, reason: 'already_completed', userId, credits };
+        }
+
         db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(credits, userId);
-        // Update transaction status
-        db.prepare("UPDATE transactions SET status = 'completed' WHERE stripe_session_id = ?").run(session.id);
-        console.log(`✅ Granted ${credits} credits to user ${userId}`);
-      } catch (err) {
-        console.error('Credit grant error:', err);
+        return { applied: true, userId, credits };
+      });
+
+      const result = applyCompletedCheckout(session);
+      if (result.applied) {
+        console.log(`✅ Granted ${result.credits} credits to user ${result.userId}`);
+      } else if (result.reason !== 'already_completed') {
+        console.warn(`Skipping checkout completion for session ${session.id}: ${result.reason}`);
       }
+    } catch (err) {
+      console.error('Credit grant error:', err);
     }
   }
 
@@ -80,21 +124,47 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(clientDistPath, 'index.html'));
 });
 
-// Auto-seed admin on startup
-(function seedAdmin() {
+function ensureUser(db, bcrypt, { email, password, username, isAdmin = 0, credits = 0 }) {
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  if (existing) {
+    return false;
+  }
+
+  const hashedPassword = bcrypt.hashSync(password, 10);
+  db.prepare(
+    'INSERT INTO users (email, password, username, is_admin, credits) VALUES (?, ?, ?, ?, ?)'
+  ).run(email, hashedPassword, username, isAdmin, credits);
+  return true;
+}
+
+// Auto-seed bootstrap users on startup
+(function seedBootstrapUsers() {
   try {
     const bcrypt = require('bcryptjs');
     const db = require('./db');
-    const email = process.env.ADMIN_EMAIL || 'admin@illustconverter.com';
-    const password = process.env.ADMIN_PASSWORD || 'admin123456';
+    const bootstrapUsers = [
+      {
+        email: process.env.ADMIN_EMAIL || 'admin@illustconverter.com',
+        password: process.env.ADMIN_PASSWORD || 'admin123456',
+        username: 'Admin',
+        isAdmin: 1,
+        credits: 999,
+      },
+      {
+        email: process.env.DEMO_EMAIL || 'demo.user@illustconverter.com',
+        password: process.env.DEMO_PASSWORD || 'user123456',
+        username: process.env.DEMO_USERNAME || 'Demo User',
+        isAdmin: 0,
+        credits: Number.parseInt(process.env.DEMO_CREDITS || '20', 10) || 20,
+      },
+    ];
 
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-    if (!existing) {
-      const hashedPassword = bcrypt.hashSync(password, 10);
-      db.prepare(
-        'INSERT INTO users (email, password, username, is_admin, credits) VALUES (?, ?, ?, 1, 999)'
-      ).run(email, hashedPassword, 'Admin');
-      console.log(`✅ Admin account auto-created: ${email} (999 credits)`);
+    for (const userConfig of bootstrapUsers) {
+      const created = ensureUser(db, bcrypt, userConfig);
+      if (created) {
+        const label = userConfig.isAdmin ? 'Admin' : 'Demo';
+        console.log(`✅ ${label} account auto-created: ${userConfig.email} (${userConfig.credits} credits)`);
+      }
     }
   } catch (err) {
     console.error('Auto-seed error:', err);
@@ -115,6 +185,40 @@ app.get('*', (req, res, next) => {
     }
   } catch (err) {
     console.error('Seed plans error:', err);
+  }
+})();
+
+// Seed default preset
+(function seedPrompts() {
+  try {
+    const db = require('./db');
+    const count = db.prepare('SELECT COUNT(*) as c FROM prompts').get();
+    if (count.c === 0) {
+      const defaultPrompt = getDefaultPromptSeed();
+      db.prepare(`
+        INSERT INTO prompts (
+          name, description, prompt, negative_prompt, strength, noise, sampler, steps, scale, model,
+          quality_tags_enabled, uc_preset, character_prompts_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        defaultPrompt.name,
+        defaultPrompt.description,
+        defaultPrompt.prompt,
+        defaultPrompt.negative_prompt,
+        defaultPrompt.strength,
+        defaultPrompt.noise,
+        defaultPrompt.sampler,
+        defaultPrompt.steps,
+        defaultPrompt.scale,
+        defaultPrompt.model,
+        defaultPrompt.quality_tags_enabled,
+        defaultPrompt.uc_preset,
+        defaultPrompt.character_prompts_json
+      );
+      console.log('✅ Default prompt created');
+    }
+  } catch (err) {
+    console.error('Seed prompts error:', err);
   }
 })();
 

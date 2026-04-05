@@ -1,6 +1,6 @@
 import Cropper from 'cropperjs';
 import 'cropperjs/dist/cropper.min.css';
-import { images, prompts } from '../api.js';
+import { images } from '../api.js';
 
 const TARGET_WIDTH = 832;
 const TARGET_HEIGHT = 1216;
@@ -16,14 +16,23 @@ let isDrawing = false;
 let brushSize = 30;
 let drawMode = 'brush'; // 'brush' or 'eraser'
 let selectedPromptId = null;
+let selectedPromptName = '';
+let backToDashboard = null;
 
 export function renderEditor(app, user, preSelectedPrompt, onBack) {
-  if (preSelectedPrompt) {
-    selectedPromptId = preSelectedPrompt.id;
-  }
-  
+  selectedPromptId = preSelectedPrompt?.id ?? null;
+  selectedPromptName = preSelectedPrompt?.name ?? '';
+  backToDashboard = onBack;
   currentStep = 1;
   croppedImageDataUrl = null;
+  isDrawing = false;
+  brushSize = 30;
+  drawMode = 'brush';
+
+  if (!selectedPromptId) {
+    onBack();
+    return;
+  }
   
   app.innerHTML = `
     <div class="editor">
@@ -110,7 +119,10 @@ function setupUpload() {
   const zone = document.getElementById('upload-zone');
   const fileInput = document.getElementById('file-input');
 
-  zone.addEventListener('click', () => fileInput.click());
+  zone.addEventListener('click', () => {
+    fileInput.value = '';
+    fileInput.click();
+  });
   
   zone.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -165,15 +177,21 @@ function handleFile(file) {
     };
 
     // Reselect button
-    document.getElementById('crop-reselect').addEventListener('click', () => {
+    const fileInput = document.getElementById('file-input');
+    const reselectButton = document.getElementById('crop-reselect');
+    const confirmButton = document.getElementById('crop-confirm');
+
+    reselectButton.onclick = () => {
       if (cropper) cropper.destroy();
       cropper = null;
+      croppedImageDataUrl = null;
+      fileInput.value = '';
       document.getElementById('crop-area').classList.add('hidden');
       document.getElementById('upload-area').classList.remove('hidden');
-    });
+    };
 
     // Confirm crop
-    document.getElementById('crop-confirm').addEventListener('click', () => {
+    confirmButton.onclick = () => {
       if (!cropper) return;
       const canvas = cropper.getCroppedCanvas({
         width: TARGET_WIDTH,
@@ -185,7 +203,7 @@ function handleFile(file) {
       cropper.destroy();
       cropper = null;
       renderStep2();
-    });
+    };
   };
   reader.readAsDataURL(file);
 }
@@ -201,7 +219,7 @@ function renderStep2() {
   content.innerHTML = `
     <div class="editor-panel">
       <h3 class="editor-title">🎨 マスクを塗る</h3>
-      <p class="editor-subtitle">変換（inpaint）したい部分を白色のブラシで塗ってください。塗った部分がAIによって変換されます。</p>
+      <p class="editor-subtitle">調整したい部分を白色のブラシで塗ってください。</p>
       
       <div class="mask-editor">
         <div class="canvas-wrapper" id="canvas-wrapper">
@@ -399,7 +417,8 @@ function setupMaskCanvas() {
 // =========================================
 // Step 3: Execute Inpaint
 // =========================================
-async function renderStep3() {
+async function renderStep3(options = {}) {
+  const { skipAutoExecute = false, errorMessage = '' } = options;
   currentStep = 3;
   updateStepIndicators();
 
@@ -428,61 +447,48 @@ async function renderStep3() {
   finalMaskCtx.putImageData(finalData, 0, 0);
 
   const content = document.getElementById('step-content');
-  
-  // If no prompt selected, show prompt selection
+
   if (!selectedPromptId) {
     content.innerHTML = `
       <div class="editor-panel">
-        <h3 class="editor-title">⚡ 変換スタイルを選択</h3>
-        <p class="editor-subtitle">使用する変換プロンプトを選んでから実行してください。</p>
-        
-        <div class="prompt-select-grid" id="prompt-select-grid">
-          <div class="loading-screen" style="min-height:150px"><div class="loading-spinner"></div></div>
-        </div>
-        
+        <h3 class="editor-title">設定を確認してください</h3>
+        <p class="editor-subtitle">利用するプリセットが見つかりません。一覧から選び直してください。</p>
+        ${errorMessage ? `<div class="auth-error show" style="display:block; margin-bottom:1rem;">${escapeHtml(errorMessage)}</div>` : ''}
+
         <div class="crop-actions mt-2">
           <button class="btn btn-secondary" id="step3-back">← マスク塗りに戻る</button>
-          <button class="btn btn-primary btn-lg" id="execute-btn" disabled>🚀 変換を実行</button>
+          <button class="btn btn-primary btn-lg" id="step3-home">← 一覧へ戻る</button>
         </div>
       </div>
     `;
 
     document.getElementById('step3-back').addEventListener('click', () => renderStep2());
-
-    try {
-      const data = await prompts.list();
-      const grid = document.getElementById('prompt-select-grid');
-      
-      if (data.prompts.length === 0) {
-        grid.innerHTML = '<p style="color:var(--text-secondary)">プロンプトが設定されていません。</p>';
-        return;
-      }
-
-      grid.innerHTML = data.prompts.map(p => `
-        <div class="card prompt-select-card" data-id="${p.id}">
-          <div class="card-title">${escapeHtml(p.name)}</div>
-          <div class="card-description">${escapeHtml(p.description || '')}</div>
-        </div>
-      `).join('');
-
-      grid.querySelectorAll('.prompt-select-card').forEach(card => {
-        card.addEventListener('click', () => {
-          grid.querySelectorAll('.prompt-select-card').forEach(c => c.classList.remove('selected'));
-          card.classList.add('selected');
-          selectedPromptId = parseInt(card.dataset.id);
-          document.getElementById('execute-btn').disabled = false;
-        });
-      });
-
-      document.getElementById('execute-btn').addEventListener('click', () => {
-        executeInpaint(finalMaskCanvas);
-      });
-    } catch (err) {
-      document.getElementById('prompt-select-grid').innerHTML = `<p style="color:var(--danger)">${escapeHtml(err.message)}</p>`;
-    }
-  } else {
-    executeInpaint(finalMaskCanvas);
+    document.getElementById('step3-home').addEventListener('click', () => backToDashboard?.());
+    return;
   }
+
+  if (skipAutoExecute) {
+    content.innerHTML = `
+      <div class="editor-panel">
+        <h3 class="editor-title">⚡ 最終確認</h3>
+        <p class="editor-subtitle">${selectedPromptName ? `選択中の設定: ${escapeHtml(selectedPromptName)}` : '選択中の設定で実行します。'}</p>
+        ${errorMessage ? `<div class="auth-error show" style="display:block; margin-bottom:1rem;">${escapeHtml(errorMessage)}</div>` : ''}
+
+        <div class="crop-actions mt-2">
+          <button class="btn btn-secondary" id="step3-back">← マスク塗りに戻る</button>
+          <button class="btn btn-primary btn-lg" id="execute-btn">変換を実行</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('step3-back').addEventListener('click', () => renderStep2());
+    document.getElementById('execute-btn').addEventListener('click', () => {
+      executeInpaint(finalMaskCanvas);
+    });
+    return;
+  }
+
+  executeInpaint(finalMaskCanvas);
 }
 
 async function executeInpaint(finalMaskCanvas) {
@@ -493,8 +499,8 @@ async function executeInpaint(finalMaskCanvas) {
   overlay.innerHTML = `
     <div class="processing-content">
       <div class="loading-spinner"></div>
-      <h3>AIが変換中...</h3>
-      <p>NovelAI で画像を生成しています。しばらくお待ちください。</p>
+      <h3>処理中...</h3>
+      <p>しばらくお待ちください。</p>
     </div>
   `;
   document.body.appendChild(overlay);
@@ -515,9 +521,9 @@ async function executeInpaint(finalMaskCanvas) {
     showResult(result.image);
   } catch (err) {
     overlay.remove();
-    showToast(`変換エラー: ${err.message}`, 'error');
-    // Go back to step 3 prompt selection
-    renderStep3();
+    showToast(err.message, 'error');
+    // Show step 3 without auto-retrying the same failed request.
+    renderStep3({ skipAutoExecute: true, errorMessage: err.message });
   }
 }
 
@@ -526,7 +532,7 @@ function showResult(resultDataUrl) {
   content.innerHTML = `
     <div class="result-section">
       <h3 class="editor-title">🎉 変換完了！</h3>
-      <p class="editor-subtitle">左が元の画像、右がAIによる変換結果です。</p>
+      <p class="editor-subtitle">左が元の画像、右が仕上がりです。</p>
       
       <div class="result-images">
         <div class="result-image-container">
@@ -540,14 +546,13 @@ function showResult(resultDataUrl) {
       </div>
       
       <div class="crop-actions mt-2">
-        <button class="btn btn-secondary" id="result-back">← 新しい画像で変換</button>
+        <button class="btn btn-secondary" id="result-back">← 別の画像で続ける</button>
         <button class="btn btn-primary" id="result-download">💾 ダウンロード</button>
       </div>
     </div>
   `;
 
   document.getElementById('result-back').addEventListener('click', () => {
-    selectedPromptId = null;
     croppedImageDataUrl = null;
     renderStep1();
   });

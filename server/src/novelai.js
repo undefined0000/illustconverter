@@ -1,7 +1,25 @@
 const https = require('https');
 const zlib = require('zlib');
+const {
+  FIXED_NOVELAI_MODEL,
+  FIXED_IMAGE_WIDTH,
+  FIXED_IMAGE_HEIGHT,
+  DEFAULT_STRENGTH,
+  DEFAULT_NOISE,
+  DEFAULT_SAMPLER,
+  DEFAULT_STEPS,
+  DEFAULT_SCALE,
+  DEFAULT_UC_PRESET,
+  buildPromptInput,
+  buildNegativePrompt,
+} = require('./novelai-config');
 
 const NOVELAI_API_URL = 'https://image.novelai.net/ai/generate-image';
+
+function numberOrFallback(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 /**
  * Call NovelAI inpaint API
@@ -17,25 +35,35 @@ async function callInpaint(imageBase64, maskBase64, promptConfig) {
   }
 
   const payload = JSON.stringify({
-    input: promptConfig.prompt,
-    model: promptConfig.model || 'nai-diffusion-3',
+    input: buildPromptInput(
+      promptConfig.prompt,
+      promptConfig.character_prompts_json ?? promptConfig.character_prompts,
+      Number(promptConfig.quality_tags_enabled ?? 1) !== 0
+    ),
+    model: FIXED_NOVELAI_MODEL,
     action: 'img2img',
     parameters: {
-      width: 832,
-      height: 1216,
-      scale: promptConfig.scale || 5.0,
-      sampler: promptConfig.sampler || 'k_euler',
-      steps: promptConfig.steps || 28,
-      strength: promptConfig.strength || 0.7,
-      noise: promptConfig.noise || 0.0,
+      width: FIXED_IMAGE_WIDTH,
+      height: FIXED_IMAGE_HEIGHT,
+      scale: numberOrFallback(promptConfig.scale, DEFAULT_SCALE),
+      sampler: promptConfig.sampler || DEFAULT_SAMPLER,
+      steps: Math.round(numberOrFallback(promptConfig.steps, DEFAULT_STEPS)),
+      strength: numberOrFallback(promptConfig.strength, DEFAULT_STRENGTH),
+      noise: numberOrFallback(promptConfig.noise, DEFAULT_NOISE),
       sm: false,
       sm_dyn: false,
       seed: Math.floor(Math.random() * 2147483647),
       image: imageBase64,
       mask: maskBase64,
-      negative_prompt: promptConfig.negative_prompt || '',
+      negative_prompt: buildNegativePrompt(
+        promptConfig.negative_prompt,
+        promptConfig.uc_preset || DEFAULT_UC_PRESET
+      ),
       extra_noise_seed: Math.floor(Math.random() * 2147483647),
       add_original_image: true,
+      cfg_rescale: 0,
+      use_coords: false,
+      inpaintImg2ImgStrength: 1,
       n_samples: 1,
     }
   });

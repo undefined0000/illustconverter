@@ -1,8 +1,65 @@
 import { admin } from '../api.js';
 
 let currentTab = 'prompts';
+const FIXED_MODEL_LABEL = 'NovelAI Diffusion V4.5 Full Inpainting';
+const FIXED_SIZE_LABEL = '832 x 1216 (縦長固定 / Opus無料範囲)';
+const MAX_CHARACTER_PROMPTS = 6;
+const DEFAULT_PROMPT_VALUES = {
+  strength: 0.7,
+  noise: 0,
+  steps: 23,
+  scale: 5.0,
+  sampler: 'k_euler_ancestral',
+  quality_tags_enabled: true,
+  uc_preset: 'heavy',
+};
+
+function renderCharacterPromptFields() {
+  const rows = [];
+  for (let index = 0; index < MAX_CHARACTER_PROMPTS; index += 2) {
+    rows.push(`
+      <div class="form-row">
+        ${renderCharacterPromptField(index)}
+        ${renderCharacterPromptField(index + 1)}
+      </div>
+    `);
+  }
+  return rows.join('');
+}
+
+function renderCharacterPromptField(index) {
+  const number = index + 1;
+  const placeholder = number === 1
+    ? 'girl, silver hair, blue eyes, soft smile, looking at viewer'
+    : '未使用なら空欄のまま';
+
+  return `
+    <div class="form-group">
+      <label class="form-label">Character Prompt ${number}</label>
+      <textarea class="form-textarea" id="pf-character-${index}" rows="2" placeholder="${placeholder}"></textarea>
+    </div>
+  `;
+}
+
+function getCharacterPromptsFromForm() {
+  return Array.from({ length: MAX_CHARACTER_PROMPTS }, (_, index) =>
+    document.getElementById(`pf-character-${index}`).value.trim()
+  ).filter(Boolean);
+}
+
+function setCharacterPromptsInForm(prompts = []) {
+  const normalized = Array.isArray(prompts) ? prompts : [];
+  for (let index = 0; index < MAX_CHARACTER_PROMPTS; index += 1) {
+    document.getElementById(`pf-character-${index}`).value = normalized[index] || '';
+  }
+}
+
+function getCharacterPromptCount(prompt) {
+  return Array.isArray(prompt?.character_prompts) ? prompt.character_prompts.filter(Boolean).length : 0;
+}
 
 export function renderAdmin(app) {
+  const characterPromptFields = renderCharacterPromptFields();
   app.innerHTML = `
     <div class="admin">
       <div class="admin-header">
@@ -34,14 +91,58 @@ export function renderAdmin(app) {
             <label class="form-label">説明</label>
             <input class="form-input" id="pf-description" placeholder="ユーザーに表示する説明文" />
           </div>
-          <div class="form-group">
-            <label class="form-label">プロンプト *</label>
-            <textarea class="form-textarea" id="pf-prompt" required rows="3" placeholder="masterpiece, best quality, ..."></textarea>
+          <div class="card" style="padding:1rem; margin-bottom:1rem; border-style:dashed;">
+            <p style="font-size:.85rem; color:var(--text-secondary); margin-bottom:.5rem;">
+              モデルは ${FIXED_MODEL_LABEL} 固定です。サイズは ${FIXED_SIZE_LABEL} 固定で、マスク塗りとトリミングはユーザー側のエディタで行います。
+            </p>
+            <p style="font-size:.85rem; color:var(--text-secondary);">
+              V4.5 は英語タグか短い英語文が前提です。人数タグや scene/style は Base Prompt に入れ、複数人物は Character Prompt に分けてください。
+            </p>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">モデル</label>
+              <input class="form-input" value="${FIXED_MODEL_LABEL}" readonly />
+            </div>
+            <div class="form-group">
+              <label class="form-label">サイズ</label>
+              <input class="form-input" value="${FIXED_SIZE_LABEL}" readonly />
+            </div>
           </div>
           <div class="form-group">
-            <label class="form-label">ネガティブプロンプト</label>
-            <textarea class="form-textarea" id="pf-negative" rows="2" placeholder="lowres, bad anatomy, ..."></textarea>
+            <label class="form-label">Base Prompt *</label>
+            <textarea class="form-textarea" id="pf-prompt" required rows="4" placeholder="1girl, solo, indoors, anime coloring, clean lineart, soft rim light"></textarea>
           </div>
+          <div class="form-group">
+            <label class="form-label">Undesired Content</label>
+            <textarea class="form-textarea" id="pf-negative" rows="3" placeholder="text, signature, watermark, duplicate face"></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Quality Tags</label>
+              <label style="display:flex; align-items:center; gap:.6rem; min-height:46px; padding:.75rem 1rem; background:var(--bg-glass); border:1px solid var(--border-color); border-radius:var(--radius-sm); color:var(--text-primary);">
+                <input type="checkbox" id="pf-quality-tags" checked />
+                full 推奨 quality tags を自動付与
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="form-label">UC Preset</label>
+              <select class="form-select" id="pf-uc-preset">
+                <option value="heavy">heavy</option>
+                <option value="light">light</option>
+                <option value="furryFocus">furryFocus</option>
+                <option value="humanFocus">humanFocus</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Character Prompts</label>
+            <p style="font-size:.8rem; color:var(--text-secondary); margin-bottom:.75rem;">
+              必要な時だけ 1〜6 個まで入力できます。送信時は <code>Base Prompt | Character 1 | Character 2 ...</code> の形に自動変換されます。
+            </p>
+          </div>
+          ${characterPromptFields}
           <div class="form-row">
             <div class="form-group">
               <label class="form-label">Strength</label>
@@ -55,7 +156,7 @@ export function renderAdmin(app) {
           <div class="form-row">
             <div class="form-group">
               <label class="form-label">Steps</label>
-              <input class="form-input" type="number" id="pf-steps" value="28" min="1" max="50" />
+              <input class="form-input" type="number" id="pf-steps" value="23" min="1" max="28" />
             </div>
             <div class="form-group">
               <label class="form-label">Scale</label>
@@ -66,20 +167,12 @@ export function renderAdmin(app) {
             <div class="form-group">
               <label class="form-label">サンプラー</label>
               <select class="form-select" id="pf-sampler">
-                <option value="k_euler">k_euler</option>
                 <option value="k_euler_ancestral">k_euler_ancestral</option>
+                <option value="k_euler">k_euler</option>
                 <option value="k_dpmpp_2s_ancestral">k_dpmpp_2s_ancestral</option>
                 <option value="k_dpmpp_2m">k_dpmpp_2m</option>
                 <option value="k_dpmpp_sde">k_dpmpp_sde</option>
                 <option value="ddim">ddim</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">モデル</label>
-              <select class="form-select" id="pf-model">
-                <option value="nai-diffusion-3">NAI Diffusion 3</option>
-                <option value="nai-diffusion-4-curated-preview">NAI Diffusion 4 Curated</option>
-                <option value="nai-diffusion-4-full">NAI Diffusion 4 Full</option>
               </select>
             </div>
           </div>
@@ -206,7 +299,10 @@ async function loadPrompts(container) {
           <h3>${escapeHtml(p.name)} ${p.is_active ? '' : '<span style="color:var(--warning)">(無効)</span>'}</h3>
           <div class="prompt-text">${escapeHtml(p.prompt)}</div>
           <div class="prompt-params">
-            <span class="param-tag">Model: ${escapeHtml(p.model)}</span>
+            <span class="param-tag">Model: V4.5 Full Inpaint</span>
+            <span class="param-tag">UC: ${escapeHtml(p.uc_preset || 'heavy')}</span>
+            <span class="param-tag">Chars: ${getCharacterPromptCount(p)}</span>
+            <span class="param-tag">Quality: ${(p.quality_tags_enabled ?? 1) ? 'auto' : 'off'}</span>
             <span class="param-tag">Str: ${p.strength}</span>
             <span class="param-tag">Steps: ${p.steps}</span>
             <span class="param-tag">Scale: ${p.scale}</span>
@@ -243,16 +339,18 @@ function setupPromptModal() {
   document.getElementById('prompt-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const data = {
-      name: document.getElementById('pf-name').value,
-      description: document.getElementById('pf-description').value,
-      prompt: document.getElementById('pf-prompt').value,
-      negative_prompt: document.getElementById('pf-negative').value,
+      name: document.getElementById('pf-name').value.trim(),
+      description: document.getElementById('pf-description').value.trim(),
+      prompt: document.getElementById('pf-prompt').value.trim(),
+      negative_prompt: document.getElementById('pf-negative').value.trim(),
+      quality_tags_enabled: document.getElementById('pf-quality-tags').checked,
+      uc_preset: document.getElementById('pf-uc-preset').value,
+      character_prompts: getCharacterPromptsFromForm(),
       strength: parseFloat(document.getElementById('pf-strength').value),
       noise: parseFloat(document.getElementById('pf-noise').value),
       steps: parseInt(document.getElementById('pf-steps').value),
       scale: parseFloat(document.getElementById('pf-scale').value),
       sampler: document.getElementById('pf-sampler').value,
-      model: document.getElementById('pf-model').value,
     };
     const btn = document.getElementById('modal-submit');
     btn.disabled = true;
@@ -272,12 +370,14 @@ function openPromptModal(prompt = null) {
   document.getElementById('pf-description').value = prompt?.description || '';
   document.getElementById('pf-prompt').value = prompt?.prompt || '';
   document.getElementById('pf-negative').value = prompt?.negative_prompt || '';
-  document.getElementById('pf-strength').value = prompt?.strength ?? 0.7;
-  document.getElementById('pf-noise').value = prompt?.noise ?? 0;
-  document.getElementById('pf-steps').value = prompt?.steps ?? 28;
-  document.getElementById('pf-scale').value = prompt?.scale ?? 5.0;
-  document.getElementById('pf-sampler').value = prompt?.sampler || 'k_euler';
-  document.getElementById('pf-model').value = prompt?.model || 'nai-diffusion-3';
+  document.getElementById('pf-quality-tags').checked = Boolean(prompt?.quality_tags_enabled ?? DEFAULT_PROMPT_VALUES.quality_tags_enabled);
+  document.getElementById('pf-uc-preset').value = prompt?.uc_preset || DEFAULT_PROMPT_VALUES.uc_preset;
+  document.getElementById('pf-strength').value = prompt?.strength ?? DEFAULT_PROMPT_VALUES.strength;
+  document.getElementById('pf-noise').value = prompt?.noise ?? DEFAULT_PROMPT_VALUES.noise;
+  document.getElementById('pf-steps').value = prompt?.steps ?? DEFAULT_PROMPT_VALUES.steps;
+  document.getElementById('pf-scale').value = prompt?.scale ?? DEFAULT_PROMPT_VALUES.scale;
+  document.getElementById('pf-sampler').value = prompt?.sampler || DEFAULT_PROMPT_VALUES.sampler;
+  setCharacterPromptsInForm(prompt?.character_prompts || []);
   document.getElementById('prompt-modal').classList.remove('hidden');
 }
 
