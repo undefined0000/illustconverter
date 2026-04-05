@@ -4,5 +4,10 @@ node_modules/
 *.db
 uploads/
 client/dist/
+public/
+tmp/
 server/node_modules/
 client/node_modules/
+
+.vercel
+.env*.local

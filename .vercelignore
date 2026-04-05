@@ -1,0 +1,8 @@
+.env.local
+.env.*.local
+.vercel/output
+public
+tmp
+server/illustconverter.db
+server/illustconverter.db-shm
+server/illustconverter.db-wal

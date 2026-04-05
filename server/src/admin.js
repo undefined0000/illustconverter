@@ -18,11 +18,11 @@ const {
 
 const router = express.Router();
 
-// Admin middleware
 function requireAdmin(req, res, next) {
   if (!req.user || !req.user.is_admin) {
     return res.status(403).json({ error: '管理者権限が必要です' });
   }
+
   next();
 }
 
@@ -82,237 +82,263 @@ function normalizePromptPayload(body, existingPrompt = {}) {
   };
 }
 
-// Get all prompts (admin)
-router.get('/prompts', authenticateToken, requireAdmin, (req, res) => {
+router.get('/prompts', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const prompts = db.prepare('SELECT * FROM prompts ORDER BY created_at DESC').all()
+    const prompts = (await db.all('SELECT * FROM prompts ORDER BY created_at DESC'))
       .map(serializePromptRecord);
+
     res.json({ prompts });
-  } catch (err) {
-    console.error('Get prompts error:', err);
+  } catch (error) {
+    console.error('Get prompts error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
-// Create prompt
-router.post('/prompts', authenticateToken, requireAdmin, (req, res) => {
+router.post('/prompts', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const payload = normalizePromptPayload(req.body);
     if (!payload.name || !payload.prompt) {
-      return res.status(400).json({ error: 'プロンプト名とプロンプトは必須です' });
+      return res.status(400).json({ error: 'プリセット名と内部設定は必須です' });
     }
 
-    const result = db.prepare(`
-      INSERT INTO prompts (
+    const result = await db.run(
+      `INSERT INTO prompts (
         name, description, prompt, negative_prompt, strength, noise, sampler, steps, scale, model,
-        quality_tags_enabled, uc_preset, character_prompts_json
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      payload.name,
-      payload.description,
-      payload.prompt,
-      payload.negative_prompt,
-      payload.strength,
-      payload.noise,
-      payload.sampler,
-      payload.steps,
-      payload.scale,
-      payload.model,
-      payload.quality_tags_enabled,
-      payload.uc_preset,
-      payload.character_prompts_json
+        quality_tags_enabled, uc_preset, character_prompts_json, is_active
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+      [
+        payload.name,
+        payload.description,
+        payload.prompt,
+        payload.negative_prompt,
+        payload.strength,
+        payload.noise,
+        payload.sampler,
+        payload.steps,
+        payload.scale,
+        payload.model,
+        payload.quality_tags_enabled,
+        payload.uc_preset,
+        payload.character_prompts_json,
+        payload.is_active,
+      ]
     );
 
-    const newPrompt = serializePromptRecord(
-      db.prepare('SELECT * FROM prompts WHERE id = ?').get(result.lastInsertRowid)
+    const prompt = serializePromptRecord(
+      await db.get('SELECT * FROM prompts WHERE id = $1', [result.lastInsertRowid])
     );
-    res.json({ prompt: newPrompt });
-  } catch (err) {
-    console.error('Create prompt error:', err);
+    res.json({ prompt });
+  } catch (error) {
+    console.error('Create prompt error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
-// Update prompt
-router.put('/prompts/:id', authenticateToken, requireAdmin, (req, res) => {
+router.put('/prompts/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-
-    const existing = db.prepare('SELECT * FROM prompts WHERE id = ?').get(id);
+    const existing = await db.get('SELECT * FROM prompts WHERE id = $1', [id]);
     if (!existing) {
-      return res.status(404).json({ error: 'プロンプトが見つかりません' });
+      return res.status(404).json({ error: 'プリセットが見つかりません' });
     }
 
     const payload = normalizePromptPayload(req.body, existing);
     if (!payload.name || !payload.prompt) {
-      return res.status(400).json({ error: 'プロンプト名とプロンプトは必須です' });
+      return res.status(400).json({ error: 'プリセット名と内部設定は必須です' });
     }
 
-    db.prepare(`
-      UPDATE prompts SET
-        name = ?, description = ?, prompt = ?, negative_prompt = ?,
-        strength = ?, noise = ?, sampler = ?, steps = ?, scale = ?, model = ?,
-        quality_tags_enabled = ?, uc_preset = ?, character_prompts_json = ?,
-        is_active = ?, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(
-      payload.name,
-      payload.description,
-      payload.prompt,
-      payload.negative_prompt,
-      payload.strength,
-      payload.noise,
-      payload.sampler,
-      payload.steps,
-      payload.scale,
-      payload.model,
-      payload.quality_tags_enabled,
-      payload.uc_preset,
-      payload.character_prompts_json,
-      payload.is_active,
-      id
+    await db.run(
+      `UPDATE prompts SET
+        name = $1,
+        description = $2,
+        prompt = $3,
+        negative_prompt = $4,
+        strength = $5,
+        noise = $6,
+        sampler = $7,
+        steps = $8,
+        scale = $9,
+        model = $10,
+        quality_tags_enabled = $11,
+        uc_preset = $12,
+        character_prompts_json = $13,
+        is_active = $14,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $15`,
+      [
+        payload.name,
+        payload.description,
+        payload.prompt,
+        payload.negative_prompt,
+        payload.strength,
+        payload.noise,
+        payload.sampler,
+        payload.steps,
+        payload.scale,
+        payload.model,
+        payload.quality_tags_enabled,
+        payload.uc_preset,
+        payload.character_prompts_json,
+        payload.is_active,
+        id,
+      ]
     );
 
-    const updated = serializePromptRecord(
-      db.prepare('SELECT * FROM prompts WHERE id = ?').get(id)
-    );
-    res.json({ prompt: updated });
-  } catch (err) {
-    console.error('Update prompt error:', err);
+    const prompt = serializePromptRecord(await db.get('SELECT * FROM prompts WHERE id = $1', [id]));
+    res.json({ prompt });
+  } catch (error) {
+    console.error('Update prompt error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
-// Delete prompt
-router.delete('/prompts/:id', authenticateToken, requireAdmin, (req, res) => {
+router.delete('/prompts/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const existing = db.prepare('SELECT * FROM prompts WHERE id = ?').get(id);
+    const existing = await db.get('SELECT id FROM prompts WHERE id = $1', [id]);
     if (!existing) {
-      return res.status(404).json({ error: 'プロンプトが見つかりません' });
+      return res.status(404).json({ error: 'プリセットが見つかりません' });
     }
 
-    db.prepare('DELETE FROM prompts WHERE id = ?').run(id);
+    await db.run('DELETE FROM prompts WHERE id = $1', [id]);
     res.json({ success: true });
-  } catch (err) {
-    console.error('Delete prompt error:', err);
+  } catch (error) {
+    console.error('Delete prompt error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
-// =========================================
-// Credit Plan Management
-// =========================================
-
-// Get all credit plans (admin)
-router.get('/plans', authenticateToken, requireAdmin, (req, res) => {
+router.get('/plans', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const plans = db.prepare('SELECT * FROM credit_plans ORDER BY sort_order ASC').all();
+    const plans = await db.all('SELECT * FROM credit_plans ORDER BY sort_order ASC, id ASC');
     res.json({ plans });
-  } catch (err) {
-    console.error('Get plans error:', err);
+  } catch (error) {
+    console.error('Get plans error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
-// Create credit plan
-router.post('/plans', authenticateToken, requireAdmin, (req, res) => {
+router.post('/plans', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { name, description, credits, price_yen, sort_order } = req.body;
     if (!name || !credits || !price_yen) {
-      return res.status(400).json({ error: 'プラン名、クレジット数、価格は必須です' });
+      return res.status(400).json({ error: 'プラン名、クレジット数、金額は必須です' });
     }
 
-    const result = db.prepare(
-      'INSERT INTO credit_plans (name, description, credits, price_yen, sort_order) VALUES (?, ?, ?, ?, ?)'
-    ).run(name, description || '', credits, price_yen, sort_order ?? 0);
-
-    const plan = db.prepare('SELECT * FROM credit_plans WHERE id = ?').get(result.lastInsertRowid);
-    res.json({ plan });
-  } catch (err) {
-    console.error('Create plan error:', err);
-    res.status(500).json({ error: 'サーバーエラーが発生しました' });
-  }
-});
-
-// Update credit plan
-router.put('/plans/:id', authenticateToken, requireAdmin, (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, description, credits, price_yen, is_active, sort_order } = req.body;
-    const existing = db.prepare('SELECT * FROM credit_plans WHERE id = ?').get(id);
-    if (!existing) return res.status(404).json({ error: 'プランが見つかりません' });
-
-    db.prepare(
-      'UPDATE credit_plans SET name=?, description=?, credits=?, price_yen=?, is_active=?, sort_order=? WHERE id=?'
-    ).run(
-      name ?? existing.name, description ?? existing.description,
-      credits ?? existing.credits, price_yen ?? existing.price_yen,
-      is_active ?? existing.is_active, sort_order ?? existing.sort_order, id
+    const result = await db.run(
+      `INSERT INTO credit_plans (name, description, credits, price_yen, sort_order)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [name, description || '', credits, price_yen, sort_order ?? 0]
     );
 
-    const updated = db.prepare('SELECT * FROM credit_plans WHERE id = ?').get(id);
-    res.json({ plan: updated });
-  } catch (err) {
-    console.error('Update plan error:', err);
+    const plan = await db.get('SELECT * FROM credit_plans WHERE id = $1', [result.lastInsertRowid]);
+    res.json({ plan });
+  } catch (error) {
+    console.error('Create plan error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
-// Delete credit plan
-router.delete('/plans/:id', authenticateToken, requireAdmin, (req, res) => {
+router.put('/plans/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    db.prepare('DELETE FROM credit_plans WHERE id = ?').run(id);
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Delete plan error:', err);
+    const existing = await db.get('SELECT * FROM credit_plans WHERE id = $1', [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'プランが見つかりません' });
+    }
+
+    const {
+      name,
+      description,
+      credits,
+      price_yen,
+      is_active,
+      sort_order,
+      stripe_price_id,
+    } = req.body;
+
+    await db.run(
+      `UPDATE credit_plans SET
+        name = $1,
+        description = $2,
+        credits = $3,
+        price_yen = $4,
+        is_active = $5,
+        sort_order = $6,
+        stripe_price_id = $7
+      WHERE id = $8`,
+      [
+        name ?? existing.name,
+        description ?? existing.description,
+        credits ?? existing.credits,
+        price_yen ?? existing.price_yen,
+        is_active ?? existing.is_active,
+        sort_order ?? existing.sort_order,
+        stripe_price_id ?? existing.stripe_price_id,
+        id,
+      ]
+    );
+
+    const plan = await db.get('SELECT * FROM credit_plans WHERE id = $1', [id]);
+    res.json({ plan });
+  } catch (error) {
+    console.error('Update plan error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
-// =========================================
-// User Management (admin)
-// =========================================
-
-// Get all users
-router.get('/users', authenticateToken, requireAdmin, (req, res) => {
+router.delete('/plans/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const users = db.prepare('SELECT id, email, username, is_admin, credits, created_at FROM users ORDER BY created_at DESC').all();
-    res.json({ users });
-  } catch (err) {
-    console.error('Get users error:', err);
+    await db.run('DELETE FROM credit_plans WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete plan error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
-// Grant credits to user
-router.post('/users/:id/grant', authenticateToken, requireAdmin, (req, res) => {
+router.get('/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const users = await db.all(
+      'SELECT id, email, username, is_admin, credits, created_at FROM users ORDER BY created_at DESC'
+    );
+    res.json({ users });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'サーバーエラーが発生しました' });
+  }
+});
+
+router.post('/users/:id/grant', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { credits } = req.body;
+
     if (!credits || credits < 1) {
       return res.status(400).json({ error: '1以上のクレジット数を指定してください' });
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-    if (!user) return res.status(404).json({ error: 'ユーザーが見つかりません' });
+    const user = await db.get('SELECT id FROM users WHERE id = $1', [id]);
+    if (!user) {
+      return res.status(404).json({ error: 'ユーザーが見つかりません' });
+    }
 
-    db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').run(credits, id);
+    await db.run('UPDATE users SET credits = credits + $1 WHERE id = $2', [credits, id]);
+    await db.run(
+      "INSERT INTO transactions (user_id, credits_amount, type, status) VALUES ($1, $2, 'admin_grant', 'completed')",
+      [id, credits]
+    );
 
-    // Record transaction
-    db.prepare(
-      "INSERT INTO transactions (user_id, credits_amount, type, status) VALUES (?, ?, 'admin_grant', 'completed')"
-    ).run(id, credits);
-
-    const updated = db.prepare('SELECT id, email, username, credits FROM users WHERE id = ?').get(id);
-    res.json({ user: updated });
-  } catch (err) {
-    console.error('Grant credits error:', err);
+    const updatedUser = await db.get(
+      'SELECT id, email, username, credits FROM users WHERE id = $1',
+      [id]
+    );
+    res.json({ user: updatedUser });
+  } catch (error) {
+    console.error('Grant credits error:', error);
     res.status(500).json({ error: 'サーバーエラーが発生しました' });
   }
 });
 
 module.exports = { router, requireAdmin };
-

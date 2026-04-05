@@ -1,5 +1,4 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+const { Pool } = require('@neondatabase/serverless');
 const {
   FIXED_NOVELAI_MODEL,
   DEFAULT_SAMPLER,
@@ -8,118 +7,207 @@ const {
   DEFAULT_UC_PRESET,
 } = require('./novelai-config');
 
-const dbPath = path.join(__dirname, '..', 'illustconverter.db');
-const db = new Database(dbPath);
-
-// Enable WAL mode for better performance
-db.pragma('journal_mode = WAL');
-
-// Create tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    username TEXT NOT NULL,
-    is_admin INTEGER DEFAULT 0,
-    credits INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS prompts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    prompt TEXT NOT NULL,
-    negative_prompt TEXT DEFAULT '',
-    strength REAL DEFAULT 0.7,
-    noise REAL DEFAULT 0.0,
-    sampler TEXT DEFAULT '${DEFAULT_SAMPLER}',
-    steps INTEGER DEFAULT ${DEFAULT_STEPS},
-    scale REAL DEFAULT ${DEFAULT_SCALE},
-    model TEXT DEFAULT '${FIXED_NOVELAI_MODEL}',
-    quality_tags_enabled INTEGER DEFAULT 1,
-    uc_preset TEXT DEFAULT '${DEFAULT_UC_PRESET}',
-    character_prompts_json TEXT DEFAULT '[]',
-    is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS jobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    prompt_id INTEGER NOT NULL,
-    status TEXT DEFAULT 'pending',
-    result_image TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (prompt_id) REFERENCES prompts(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS credit_plans (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    credits INTEGER NOT NULL,
-    price_yen INTEGER NOT NULL,
-    stripe_price_id TEXT DEFAULT '',
-    is_active INTEGER DEFAULT 1,
-    sort_order INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    plan_id INTEGER,
-    credits_amount INTEGER NOT NULL,
-    type TEXT NOT NULL DEFAULT 'purchase',
-    stripe_session_id TEXT DEFAULT '',
-    status TEXT DEFAULT 'pending',
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (plan_id) REFERENCES credit_plans(id)
-  );
-
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_stripe_session_id
-  ON transactions(stripe_session_id)
-  WHERE stripe_session_id IS NOT NULL AND stripe_session_id != '';
-`);
-
-// Migration: add credits column if missing (for existing DBs)
-try {
-  db.prepare("SELECT credits FROM users LIMIT 1").get();
-} catch (e) {
-  db.exec("ALTER TABLE users ADD COLUMN credits INTEGER DEFAULT 0");
-  console.log('✅ Migration: added credits column to users');
-}
-
-function columnExists(tableName, columnName) {
-  return db.prepare(`PRAGMA table_info(${tableName})`).all().some((column) => column.name === columnName);
-}
-
-function addColumnIfMissing(tableName, columnDefinition) {
-  const [columnName] = columnDefinition.split(' ');
-  if (columnExists(tableName, columnName)) {
-    return;
+function getDatabaseUrl() {
+  const value = process.env.DATABASE_URL?.trim();
+  if (!value) {
+    throw new Error('DATABASE_URL is not configured');
   }
 
-  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnDefinition}`);
-  console.log(`✅ Migration: added ${columnName} column to ${tableName}`);
+  return value;
 }
 
-addColumnIfMissing('prompts', "quality_tags_enabled INTEGER DEFAULT 1");
-addColumnIfMissing('prompts', `uc_preset TEXT DEFAULT '${DEFAULT_UC_PRESET}'`);
-addColumnIfMissing('prompts', "character_prompts_json TEXT DEFAULT '[]'");
+function createPool() {
+  return new Pool({
+    connectionString: getDatabaseUrl(),
+  });
+}
 
-db.prepare('UPDATE prompts SET model = ? WHERE model IS NULL OR model != ?')
-  .run(FIXED_NOVELAI_MODEL, FIXED_NOVELAI_MODEL);
+async function withPool(callback) {
+  const pool = createPool();
 
-db.prepare('UPDATE prompts SET quality_tags_enabled = 1 WHERE quality_tags_enabled IS NULL').run();
-db.prepare('UPDATE prompts SET uc_preset = ? WHERE uc_preset IS NULL OR uc_preset = ?')
-  .run(DEFAULT_UC_PRESET, '');
-db.prepare('UPDATE prompts SET character_prompts_json = ? WHERE character_prompts_json IS NULL OR trim(character_prompts_json) = ?')
-  .run('[]', '');
+  try {
+    return await callback(pool);
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
 
-module.exports = db;
+async function query(text, params = [], executor = null) {
+  if (executor) {
+    return executor.query(text, params);
+  }
+
+  return withPool((pool) => pool.query(text, params));
+}
+
+async function get(text, params = [], executor = null) {
+  const result = await query(text, params, executor);
+  return result.rows[0];
+}
+
+async function all(text, params = [], executor = null) {
+  const result = await query(text, params, executor);
+  return result.rows;
+}
+
+async function run(text, params = [], executor = null) {
+  const result = await query(text, params, executor);
+  return {
+    changes: result.rowCount,
+    rows: result.rows,
+    lastInsertRowid: result.rows[0]?.id ?? null,
+  };
+}
+
+async function transaction(callback) {
+  return withPool(async (pool) => {
+    const client = await pool.connect();
+
+    const tx = {
+      query: (text, params = []) => client.query(text, params),
+      get: (text, params = []) => get(text, params, client),
+      all: (text, params = []) => all(text, params, client),
+      run: (text, params = []) => run(text, params, client),
+    };
+
+    try {
+      await client.query('BEGIN');
+      const result = await callback(tx);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+}
+
+let initializePromise = null;
+
+async function initialize() {
+  if (!initializePromise) {
+    const promise = (async () => {
+      await withPool(async (pool) => {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS users (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            username TEXT NOT NULL,
+            is_admin INTEGER DEFAULT 0,
+            credits INTEGER DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS prompts (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            prompt TEXT NOT NULL,
+            negative_prompt TEXT DEFAULT '',
+            strength DOUBLE PRECISION DEFAULT 0.7,
+            noise DOUBLE PRECISION DEFAULT 0.0,
+            sampler TEXT DEFAULT '${DEFAULT_SAMPLER}',
+            steps INTEGER DEFAULT ${DEFAULT_STEPS},
+            scale DOUBLE PRECISION DEFAULT ${DEFAULT_SCALE},
+            model TEXT DEFAULT '${FIXED_NOVELAI_MODEL}',
+            quality_tags_enabled INTEGER DEFAULT 1,
+            uc_preset TEXT DEFAULT '${DEFAULT_UC_PRESET}',
+            character_prompts_json TEXT DEFAULT '[]',
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            prompt_id INTEGER NOT NULL REFERENCES prompts(id),
+            status TEXT DEFAULT 'pending',
+            result_image TEXT,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS credit_plans (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            credits INTEGER NOT NULL,
+            price_yen INTEGER NOT NULL,
+            stripe_price_id TEXT DEFAULT '',
+            is_active INTEGER DEFAULT 1,
+            sort_order INTEGER DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            plan_id INTEGER REFERENCES credit_plans(id),
+            credits_amount INTEGER NOT NULL,
+            type TEXT NOT NULL DEFAULT 'purchase',
+            stripe_session_id TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+
+        await pool.query(`
+          ALTER TABLE prompts
+          ADD COLUMN IF NOT EXISTS quality_tags_enabled INTEGER DEFAULT 1
+        `);
+        await pool.query(`
+          ALTER TABLE prompts
+          ADD COLUMN IF NOT EXISTS uc_preset TEXT DEFAULT '${DEFAULT_UC_PRESET}'
+        `);
+        await pool.query(`
+          ALTER TABLE prompts
+          ADD COLUMN IF NOT EXISTS character_prompts_json TEXT DEFAULT '[]'
+        `);
+        await pool.query(`
+          ALTER TABLE credit_plans
+          ADD COLUMN IF NOT EXISTS stripe_price_id TEXT DEFAULT ''
+        `);
+        await pool.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_stripe_session_id
+          ON transactions(stripe_session_id)
+          WHERE stripe_session_id IS NOT NULL AND stripe_session_id <> ''
+        `);
+      });
+
+      await run(
+        'UPDATE prompts SET model = $1 WHERE model IS NULL OR model <> $1',
+        [FIXED_NOVELAI_MODEL]
+      );
+      await run(
+        'UPDATE prompts SET quality_tags_enabled = 1 WHERE quality_tags_enabled IS NULL'
+      );
+      await run(
+        'UPDATE prompts SET uc_preset = $1 WHERE uc_preset IS NULL OR uc_preset = $2',
+        [DEFAULT_UC_PRESET, '']
+      );
+      await run(
+        'UPDATE prompts SET character_prompts_json = $1 WHERE character_prompts_json IS NULL OR btrim(character_prompts_json) = $2',
+        ['[]', '']
+      );
+    })();
+
+    initializePromise = promise.catch((error) => {
+      initializePromise = null;
+      throw error;
+    });
+  }
+
+  return initializePromise;
+}
+
+module.exports = {
+  initialize,
+  query,
+  get,
+  all,
+  run,
+  transaction,
+};

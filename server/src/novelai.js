@@ -29,9 +29,9 @@ function numberOrFallback(value, fallback) {
  * @returns {Promise<Buffer>} - Result image as Buffer
  */
 async function callInpaint(imageBase64, maskBase64, promptConfig) {
-  const token = process.env.NOVELAI_TOKEN;
+  const token = process.env.NOVELAI_TOKEN?.trim() || process.env.NOVELAI_API_TOKEN?.trim();
   if (!token || token === 'your_novelai_api_token_here') {
-    throw new Error('NovelAI API トークンが設定されていません。.envファイルを確認してください。');
+    throw new Error('NovelAI token is not configured');
   }
 
   const payload = JSON.stringify({
